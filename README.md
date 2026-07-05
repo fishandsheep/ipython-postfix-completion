@@ -109,11 +109,24 @@ fields are allowed.
 
 ## Built-in Templates
 
-Built-in names include:
+Default templates:
 
-```text
-dict if len list not par print raise return set str tuple while yield
-```
+| Name | Expansion |
+| --- | --- |
+| `print` | `print({expr})` |
+| `len` | `len({expr})` |
+| `not` | `not {expr}` |
+| `par` | `({expr})` |
+| `return` | `return {expr}` |
+| `if` | `if {expr}:\n{indent}    ` |
+| `while` | `while {expr}:\n{indent}    ` |
+| `raise` | `raise {expr}` |
+| `yield` | `yield {expr}` |
+| `str` | `str({expr})` |
+| `list` | `list({expr})` |
+| `set` | `set({expr})` |
+| `dict` | `dict({expr})` |
+| `tuple` | `tuple({expr})` |
 
 Use `%postfix_template list` in IPython to see the exact effective set, including
 custom and disabled templates.
