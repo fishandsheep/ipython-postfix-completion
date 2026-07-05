@@ -6,16 +6,34 @@ Package on PyPI: `ipython-postfix-completion`
 
 ## Install
 
-Install from PyPI:
+Install into the current Python environment with `uv`:
+
+```bash
+uv pip install ipython-postfix-completion
+```
+
+Install into the current Python environment with `pip`:
 
 ```bash
 python -m pip install ipython-postfix-completion
 ```
 
+Run a temporary IPython session with the extension available:
+
+```bash
+uvx --with ipython-postfix-completion ipython
+```
+
+Equivalent long form:
+
+```bash
+uv tool run --with ipython-postfix-completion ipython
+```
+
 Install from a local checkout:
 
 ```bash
-python -m pip install -e .
+uv sync --extra test --extra dev
 ```
 
 ## Load
@@ -136,23 +154,21 @@ custom and disabled templates.
 Run tests:
 
 ```bash
-python -m pip install -e ".[test]"
-python -m pytest
+uv run --extra test pytest -q
 ```
 
 Build and check release artifacts:
 
 ```bash
-python -m pip install build twine
-python -m build
-python -m twine check dist/*
+uv run --extra dev python -m build
+uv run --extra dev python -m twine check dist/*
 ```
 
 Validate the wheel in a clean local virtual environment:
 
 ```bash
-python -m venv .venv-check
-.venv-check/bin/python -m pip install dist/ipython_postfix_completion-0.1.0-py3-none-any.whl
+uv venv .venv-check
+uv pip install --python .venv-check/bin/python dist/*.whl
 .venv-check/bin/ipython
 ```
 
@@ -169,7 +185,7 @@ Then inside IPython:
 Upload to PyPI:
 
 ```bash
-python -m twine upload dist/*
+uv run --extra dev python -m twine upload dist/*
 ```
 
 After the first upload creates the project on PyPI, prefer a project-scoped API
