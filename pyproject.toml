@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ipython-postfix-completion"
+version = "0.1.0"
+description = "Configurable postfix completion extension for IPython."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "BSD-3-Clause"
+authors = [
+    {name = "IPython Postfix Completion Contributors"},
+]
+keywords = ["ipython", "completion", "postfix", "extension"]
+classifiers = [
+    "Framework :: IPython",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "ipython>=9.0",
+    "traitlets>=5.13",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+]
+dev = [
+    "build",
+    "twine",
+    "ipython-postfix-completion[test]",
+]
+
+[tool.setuptools.packages.find]
+include = ["ipython_postfix_completion*"]
+namespaces = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "error::ResourceWarning",
+]
