@@ -12,10 +12,10 @@ Install into the current Python environment with `uv`:
 uvx --with ipython-postfix-completion ipython
 ```
 
-Install into the current Python environment with `pip`:
+Install into the current ipython environment with `uv`:
 
 ```bash
-pip install ipython-postfix-completion
+uv tool install ipython --with ipython-postfix-completion
 ```
 
 ## Load
