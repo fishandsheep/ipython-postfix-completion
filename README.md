@@ -9,31 +9,13 @@ Package on PyPI: `ipython-postfix-completion`
 Install into the current Python environment with `uv`:
 
 ```bash
-uv pip install ipython-postfix-completion
+uvx --with ipython-postfix-completion ipython
 ```
 
 Install into the current Python environment with `pip`:
 
 ```bash
-python -m pip install ipython-postfix-completion
-```
-
-Run a temporary IPython session with the extension available:
-
-```bash
-uvx --with ipython-postfix-completion ipython
-```
-
-Equivalent long form:
-
-```bash
-uv tool run --with ipython-postfix-completion ipython
-```
-
-Install from a local checkout:
-
-```bash
-uv sync --extra test --extra dev
+pip install ipython-postfix-completion
 ```
 
 ## Load
