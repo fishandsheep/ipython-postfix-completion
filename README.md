@@ -102,10 +102,54 @@ c.PostfixCompletionConfig.templates = {
 c.PostfixCompletionConfig.disabled_templates = ["tuple"]
 ```
 
+Smart Tab jump is enabled by default. Disable it while keeping postfix
+completion with:
+
+```python
+c.PostfixCompletionConfig.smart_tab_jump = False
+```
+
 Template names must match `[A-Za-z_][A-Za-z0-9_]*`.
 
 Templates must include `{expr}` and may also use `{indent}`. No other template
 fields are allowed.
+
+## `.var` Placeholder
+
+The built-in `.var` template creates an assignment and selects `key` as an
+editable placeholder:
+
+```text
+"hello".var<Tab>  ->  key = "hello"
+                       ^^^ selected
+```
+
+While `key` remains selected:
+
+- Tab accepts `key` and moves cursor to the end of the assignment.
+- Enter behaves like Tab for this selection only; press Enter again to submit.
+- Any other typed text replaces `key` with a custom variable name.
+
+## Smart Tab Jump
+
+When cursor is immediately before a valid Python closing token, Tab moves over
+it without changing source text. Repeated Tab presses exit nested constructs:
+
+```text
+"hello|"                 -> "hello"|
+print("hello|")          -> print("hello"|) -> print("hello")|
+print(f"{name|}")        -> print(f"{name}|") -> print(f"{name}"|) -> print(f"{name}")|
+items[index|]            -> items[index]|
+list[dict[str, int|]]    -> list[dict[str, int]|] -> list[dict[str, int]]|
+{"name": value|}         -> {"name": value}|
+```
+
+`|` marks cursor and is not typed. Supported closers are single and triple
+quotes plus `)`, `]`, and `}`. Detection follows Python tokens, including
+multiline input, string prefixes, and f-string expressions. Tab still accepts
+the `.var` name selection or an exact postfix template first; otherwise it
+falls back to IPython completion or indentation. Ambiguous `< >`, colon, and
+comma are intentionally excluded.
 
 ## Built-in Templates
 
@@ -117,7 +161,7 @@ Default templates:
 | `len` | `len({expr})` |
 | `not` | `not {expr}` |
 | `par` | `({expr})` |
-| `var` | `{expr} = ` |
+| `var` | `key = {expr}`; selects `key`; Tab or Enter accepts it |
 | `await` | `await {expr}` |
 | `return` | `return {expr}` |
 | `if` | `if {expr}:\n{indent}    ` |

@@ -18,14 +18,13 @@ from IPython.core.completer import (
 from IPython.core.error import UsageError
 from IPython.terminal.ptutils import IPythonPTCompleter
 from traitlets import Dict as TraitletsDict
+from traitlets import Bool
 from traitlets import List as TraitletsList
 from traitlets import Unicode
 from traitlets.config.configurable import Configurable
 
 
-_POSTFIX_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<body>.*)\.(?P<prefix>[A-Za-z_]*)$"
-)
+_POSTFIX_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<body>.*)\.(?P<prefix>[A-Za-z_]*)$")
 _PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _STATE_NAME = "postfix_completion"
 _STYLE = "bg:#44475a #f8f8f2"
@@ -36,6 +35,12 @@ _MAGIC_NAME = "postfix_template"
 _NO_MAGIC = object()
 _NO_MAGIC_ATTR = object()
 _ACTIVE_STATE: "PostfixState | None" = None
+_VAR_TEMPLATE = "key = {expr}"
+_VAR_PLACEHOLDER = "key"
+_PLACEHOLDER_ATTR = "_postfix_completion_placeholder"
+_OPENING_BRACKETS = {"(": ")", "[": "]", "{": "}"}
+_CLOSING_BRACKETS = {closer: opener for opener, closer in _OPENING_BRACKETS.items()}
+_STRING_START_RE = re.compile(r"(?i)^(?P<prefix>[rubf]*)(?P<quote>'''|\"\"\"|'|\")")
 
 
 class _TemplateFormatter(string.Formatter):
@@ -53,7 +58,7 @@ DEFAULT_TEMPLATES: dict[str, str] = {
     "len": "len({expr})",
     "not": "not {expr}",
     "par": "({expr})",
-    "var": "{expr} = ",
+    "var": _VAR_TEMPLATE,
     "await": "await {expr}",
     "return": "return {expr}",
     "if": "if {expr}:\n{indent}    ",
@@ -88,13 +93,16 @@ class PostfixCompletionConfig(Configurable):
         _SELECTED_STYLE,
         help="Prompt-toolkit selected style for postfix completion menu entries.",
     ).tag(config=True)
+    smart_tab_jump = Bool(
+        True,
+        help="Move Tab over adjacent Python string and bracket closing tokens.",
+    ).tag(config=True)
 
 
 def _validate_template_name(name: str) -> None:
     if not _TEMPLATE_NAME_RE.match(name):
         raise UsageError(
-            f"Invalid postfix template name {name!r}: expected "
-            "[A-Za-z_][A-Za-z0-9_]*"
+            f"Invalid postfix template name {name!r}: expected [A-Za-z_][A-Za-z0-9_]*"
         )
 
 
@@ -286,8 +294,317 @@ def _expand_buffer(buffer) -> bool:
     matched_fragment, candidates = _postfix_candidates(line, exact=True)
     if len(candidates) != 1:
         return False
+    parsed = _line_prefix(line)
     buffer.delete_before_cursor(len(matched_fragment))
+    expansion_start = buffer.cursor_position
     buffer.insert_text(candidates[0])
+    if (
+        parsed is not None
+        and parsed[2] == "var"
+        and _effective_templates().get("var") == _VAR_TEMPLATE
+    ):
+        _select_placeholder(
+            buffer,
+            expansion_start,
+            expansion_start + len(_VAR_PLACEHOLDER),
+            buffer.cursor_position,
+        )
+    return True
+
+
+def _select_placeholder(buffer, start: int, end: int, final_cursor: int) -> None:
+    from prompt_toolkit.selection import SelectionState, SelectionType
+
+    buffer.cursor_position = end
+    buffer.selection_state = SelectionState(start, SelectionType.CHARACTERS)
+    buffer.selection_state.enter_shift_mode()
+    setattr(buffer, _PLACEHOLDER_ATTR, (start, end, final_cursor))
+
+
+def _has_active_placeholder(buffer) -> bool:
+    placeholder = getattr(buffer, _PLACEHOLDER_ATTR, None)
+    selection = buffer.selection_state
+    if placeholder is None or selection is None:
+        return False
+    start, end, _ = placeholder
+    return (
+        selection.shift_mode
+        and selection.original_cursor_position == start
+        and buffer.cursor_position == end
+        and buffer.text[start:end] == _VAR_PLACEHOLDER
+    )
+
+
+def _accept_placeholder(buffer) -> bool:
+    if not _has_active_placeholder(buffer):
+        return False
+    _, _, final_cursor = getattr(buffer, _PLACEHOLDER_ATTR)
+    buffer.exit_selection()
+    buffer.cursor_position = final_cursor
+    delattr(buffer, _PLACEHOLDER_ATTR)
+    return True
+
+
+def _line_offsets(source: str) -> list[int]:
+    offsets = [0]
+    offsets.extend(match.end() for match in re.finditer("\n", source))
+    return offsets
+
+
+def _absolute_token_position(
+    position: tuple[int, int], line_offsets: list[int], source_length: int
+) -> int:
+    row, column = position
+    if 0 < row <= len(line_offsets):
+        return min(line_offsets[row - 1] + column, source_length)
+    return source_length
+
+
+def _python_tokens(source: str) -> list[tuple[tokenize.TokenInfo, int, int]]:
+    line_offsets = _line_offsets(source)
+    tokens: list[tuple[tokenize.TokenInfo, int, int]] = []
+    generator = tokenize.generate_tokens(io.StringIO(source).readline)
+    try:
+        for token in generator:
+            start = _absolute_token_position(token.start, line_offsets, len(source))
+            end = _absolute_token_position(token.end, line_offsets, len(source))
+            tokens.append((token, start, end))
+    except (IndentationError, SyntaxError, tokenize.TokenError):
+        # Incomplete interactive input is normal. Tokens emitted before the
+        # error still describe whether the adjacent closer is syntactic.
+        pass
+    return tokens
+
+
+def _string_parts(value: str) -> tuple[str, str] | None:
+    match = _STRING_START_RE.match(value)
+    if match is None:
+        return None
+    return match.group("prefix"), match.group("quote")
+
+
+def _quoted_string_end(value: str, quote_start: int) -> int:
+    quote = value[quote_start : quote_start + 3]
+    delimiter = quote if quote in {"'''", '"""'} else value[quote_start]
+    index = quote_start + len(delimiter)
+    while index < len(value):
+        if value.startswith(delimiter, index):
+            backslashes = 0
+            before = index - 1
+            while before >= quote_start and value[before] == "\\":
+                backslashes += 1
+                before -= 1
+            if backslashes % 2 == 0:
+                return index + len(delimiter)
+        index += 1
+    return len(value)
+
+
+def _fstring_brace_is_closing(value: str, cursor: int) -> bool:
+    parts = _string_parts(value)
+    if parts is None:
+        return False
+    prefix, quote = parts
+    if "f" not in prefix.lower() or not value.endswith(quote):
+        return False
+
+    content_start = len(prefix) + len(quote)
+    content_end = len(value) - len(quote)
+    if not (content_start <= cursor < content_end) or value[cursor] != "}":
+        return False
+
+    # Each context is [kind, is_format_spec, bracket_stack]. Literal f-string
+    # text and Python replacement expressions follow different brace rules.
+    contexts: list[list[object]] = [["literal", False, []]]
+    index = content_start
+    while index <= cursor and contexts:
+        kind, is_format_spec, bracket_stack = contexts[-1]
+        character = value[index]
+
+        if kind == "literal":
+            if character == "{" and value.startswith("{{", index):
+                index += 2
+                continue
+            if character == "{":
+                contexts.append(["expression", False, []])
+                index += 1
+                continue
+            if character == "}" and is_format_spec:
+                if index == cursor:
+                    return True
+                contexts.pop()
+                index += 1
+                continue
+            if character == "}" and value.startswith("}}", index):
+                index += 2
+                continue
+            if character == "}":
+                return False
+            index += 1
+            continue
+
+        assert isinstance(bracket_stack, list)
+        if character in {"'", '"'}:
+            string_end = _quoted_string_end(value, index)
+            if index < cursor < string_end:
+                # A nested f-string can contain the candidate brace.
+                prefix_start = index
+                while prefix_start > content_start and value[prefix_start - 1] in (
+                    "rRuUbBfF"
+                ):
+                    prefix_start -= 1
+                nested = value[prefix_start:string_end]
+                if "f" in value[prefix_start:index].lower():
+                    return _fstring_brace_is_closing(nested, cursor - prefix_start)
+                return False
+            index = string_end
+            continue
+        if character == "#":
+            newline = value.find("\n", index)
+            if newline == -1 or cursor < newline:
+                return False
+            index = newline + 1
+            continue
+        if character in _OPENING_BRACKETS:
+            bracket_stack.append(character)
+            index += 1
+            continue
+        if character in _CLOSING_BRACKETS:
+            if bracket_stack:
+                if bracket_stack[-1] != _CLOSING_BRACKETS[character]:
+                    return False
+                bracket_stack.pop()
+                index += 1
+                continue
+            if character == "}":
+                if index == cursor:
+                    return True
+                contexts.pop()
+                index += 1
+                continue
+            return False
+        if character == ":" and not bracket_stack:
+            contexts[-1] = ["literal", True, []]
+            index += 1
+            continue
+        index += 1
+    return False
+
+
+def _string_closer_width(
+    source: str,
+    cursor: int,
+    tokens: list[tuple[tokenize.TokenInfo, int, int]],
+) -> int:
+    fstring_end_types = {
+        token_type
+        for token_type in (
+            getattr(tokenize, "FSTRING_END", None),
+            getattr(tokenize, "TSTRING_END", None),
+        )
+        if token_type is not None
+    }
+    for token, start, end in tokens:
+        if token.type in fstring_end_types and start == cursor:
+            if token.string in {"'", '"', "'''", '"""'}:
+                return len(token.string)
+        if token.type != tokenize.STRING:
+            continue
+        parts = _string_parts(token.string)
+        if parts is None:
+            continue
+        _, quote = parts
+        if end - len(quote) == cursor and source.startswith(quote, cursor):
+            return len(quote)
+    return 0
+
+
+def _bracket_closer_is_syntactic(
+    source: str,
+    cursor: int,
+    tokens: list[tuple[tokenize.TokenInfo, int, int]],
+) -> bool:
+    closer = source[cursor]
+    stack: list[str] = []
+    for token, start, _ in tokens:
+        if start > cursor:
+            break
+        if token.type != tokenize.OP or token.string not in (
+            _OPENING_BRACKETS | _CLOSING_BRACKETS
+        ):
+            continue
+        if start == cursor:
+            return (
+                token.string == closer
+                and bool(stack)
+                and (stack[-1] == _CLOSING_BRACKETS[closer])
+            )
+        if token.string in _OPENING_BRACKETS:
+            stack.append(token.string)
+        elif not stack or stack[-1] != _CLOSING_BRACKETS[token.string]:
+            return False
+        else:
+            stack.pop()
+    return False
+
+
+def _fstring_brace_fallback(
+    source: str,
+    cursor: int,
+    tokens: list[tuple[tokenize.TokenInfo, int, int]],
+) -> bool:
+    for token, start, end in tokens:
+        if token.type == tokenize.STRING and start < cursor < end:
+            return _fstring_brace_is_closing(token.string, cursor - start)
+    return False
+
+
+def _smart_tab_jump_width(source: str, cursor: int) -> int:
+    if cursor >= len(source):
+        return 0
+
+    tokens = _python_tokens(source)
+    quote_width = _string_closer_width(source, cursor, tokens)
+    if quote_width:
+        return quote_width
+
+    if source[cursor] not in _CLOSING_BRACKETS:
+        return 0
+    line_start = source.rfind("\n", 0, cursor) + 1
+    if not source[line_start:cursor].strip():
+        return 0
+    if _bracket_closer_is_syntactic(source, cursor, tokens):
+        return 1
+    if source[cursor] == "}" and _fstring_brace_fallback(source, cursor, tokens):
+        return 1
+    return 0
+
+
+def _smart_tab_jump_enabled(state: PostfixState | None = None) -> bool:
+    state = _state_or_default(state)
+    return state is None or state.config.smart_tab_jump
+
+
+def _can_smart_tab_jump(buffer, state: PostfixState | None = None) -> bool:
+    if not _smart_tab_jump_enabled(state) or _has_active_placeholder(buffer):
+        return False
+    if _postfix_candidates(
+        buffer.document.current_line_before_cursor, exact=True, state=state
+    )[1]:
+        return False
+    return bool(_smart_tab_jump_width(buffer.text, buffer.cursor_position))
+
+
+def _jump_over_closer(buffer) -> bool:
+    width = _smart_tab_jump_width(buffer.text, buffer.cursor_position)
+    if not width:
+        return False
+    if buffer.complete_state is not None:
+        buffer.cancel_completion()
+        width = _smart_tab_jump_width(buffer.text, buffer.cursor_position)
+        if not width:
+            return False
+    buffer.cursor_position += width
     return True
 
 
@@ -299,7 +616,7 @@ def _insert_trigger_and_maybe_complete(buffer) -> bool:
     return True
 
 
-def _make_key_bindings():
+def _make_key_bindings(state: PostfixState | None = None):
     from prompt_toolkit.application.current import get_app
     from prompt_toolkit.filters import Condition
     from prompt_toolkit.key_binding import KeyBindings
@@ -311,13 +628,35 @@ def _make_key_bindings():
         buffer = get_app().current_buffer
         return bool(
             _postfix_candidates(
-                buffer.document.current_line_before_cursor, exact=True
+                buffer.document.current_line_before_cursor,
+                exact=True,
+                state=state,
             )[1]
         )
+
+    @Condition
+    def has_active_placeholder() -> bool:
+        return _has_active_placeholder(get_app().current_buffer)
+
+    @Condition
+    def can_smart_tab_jump() -> bool:
+        return _can_smart_tab_jump(get_app().current_buffer, state)
+
+    @key_bindings.add("tab", filter=has_active_placeholder)
+    def accept_placeholder(event) -> None:
+        _accept_placeholder(event.current_buffer)
+
+    @key_bindings.add("enter", filter=has_active_placeholder)
+    def accept_placeholder_with_enter(event) -> None:
+        _accept_placeholder(event.current_buffer)
 
     @key_bindings.add("tab", filter=has_exact_postfix)
     def expand_postfix(event) -> None:
         _expand_buffer(event.current_buffer)
+
+    @key_bindings.add("tab", filter=can_smart_tab_jump)
+    def smart_tab_jump(event) -> None:
+        _jump_over_closer(event.current_buffer)
 
     @key_bindings.add(".")
     def insert_trigger(event) -> None:
@@ -400,10 +739,12 @@ def _postfix_template_magic(line: str) -> None:
 
 def _list_postfix_templates(state: PostfixState) -> None:
     effective = state.effective_templates()
-    names = set(DEFAULT_TEMPLATES) | set(state.config.templates) | set(
-        state.runtime_templates or {}
-    ) | set(state.config.disabled_templates) | set(
-        state.runtime_disabled_templates or set()
+    names = (
+        set(DEFAULT_TEMPLATES)
+        | set(state.config.templates)
+        | set(state.runtime_templates or {})
+        | set(state.config.disabled_templates)
+        | set(state.runtime_disabled_templates or set())
     )
     for name in sorted(names):
         origin = state.template_origin(name)
@@ -435,7 +776,7 @@ class PostfixPTCompleter(IPythonPTCompleter):
 
             fragment = body[completion.start : completion.end]
             line_start = body.rfind("\n", 0, completion.start) + 1
-            indent = body[line_start:completion.start]
+            indent = body[line_start : completion.start]
             state = _state_or_default()
             key = _template_name(fragment, completion.text, indent, state) or "postfix"
             display = f".{key} -> {completion.text}"
@@ -484,7 +825,9 @@ def _install_key_binding(ip, state: PostfixState) -> None:
     from prompt_toolkit.key_binding import merge_key_bindings
 
     state.original_key_bindings = original
-    pt_app.key_bindings = merge_key_bindings([_make_key_bindings(), original])
+    # prompt-toolkit resolves the last active binding. Keep extension bindings
+    # last so their filtered Tab cases win while native bindings remain fallback.
+    pt_app.key_bindings = merge_key_bindings([original, _make_key_bindings(state)])
 
 
 def load_ipython_extension(ip) -> None:

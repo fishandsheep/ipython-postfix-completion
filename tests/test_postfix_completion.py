@@ -7,17 +7,19 @@ from IPython.core.completer import provisionalcompleter
 from IPython.core.error import UsageError
 from IPython.terminal.shortcuts import create_ipython_shortcuts
 from IPython.terminal.ptutils import IPythonPTCompleter
+from prompt_toolkit import PromptSession
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+from prompt_toolkit.output import DummyOutput
 
 import ipython_postfix_completion as postfix
 
 
 def _set_postfix_config(ip, **values):
     section = ip.config.PostfixCompletionConfig
-    old_values = {
-        name: section[name] for name in values if name in section
-    }
+    old_values = {name: section[name] for name in values if name in section}
     missing = {name for name in values if name not in section}
     for name, value in values.items():
         section[name] = value
@@ -49,6 +51,33 @@ def _single_completion_text(text):
     return completions[0]
 
 
+def _run_prompt_keys(keys, key_bindings=None):
+    with create_pipe_input() as pipe_input:
+        pipe_input.send_text(keys)
+        session = PromptSession(
+            input=pipe_input,
+            output=DummyOutput(),
+            key_bindings=key_bindings or postfix._make_key_bindings(),
+        )
+        return session.prompt()
+
+
+def _marked_source(value):
+    assert value.count("|") == 1
+    cursor = value.index("|")
+    return value.replace("|", ""), cursor
+
+
+def _bindings_with_tab_fallback(state=None):
+    fallback = KeyBindings()
+
+    @fallback.add("tab")
+    def insert_native_tab(event):
+        event.current_buffer.insert_text("    ")
+
+    return merge_key_bindings([fallback, postfix._make_key_bindings(state)])
+
+
 def test_postfix_matcher_expands_basic_templates():
     ip = get_ipython()
     postfix.load_ipython_extension(ip)
@@ -66,7 +95,7 @@ def test_postfix_matcher_expands_basic_templates():
     [
         ("not", "x.not", "not x"),
         ("par", "x.par", "(x)"),
-        ("var", "result.var", "result = "),
+        ("var", '"hello".var', 'key = "hello"'),
         ("await", "task.await", "await task"),
         ("return", "x.return", "return x"),
         ("if", "x.if", "if x:\n    "),
@@ -165,9 +194,7 @@ def test_postfix_matcher_rejects_invalid_expressions():
 
 def test_config_adds_custom_template():
     ip = get_ipython()
-    old_values, missing = _set_postfix_config(
-        ip, templates={"debug": "print({expr}=)"}
-    )
+    old_values, missing = _set_postfix_config(ip, templates={"debug": "print({expr}=)"})
     try:
         postfix.load_ipython_extension(ip)
         assert _single_completion_text("x.debug") == "print(x=)"
@@ -286,9 +313,7 @@ def test_postfix_template_magic_rejects_invalid_templates(line, message):
 
 def test_unload_discards_runtime_templates_but_config_reload_still_applies():
     ip = get_ipython()
-    old_values, missing = _set_postfix_config(
-        ip, templates={"debug": "print({expr}=)"}
-    )
+    old_values, missing = _set_postfix_config(ip, templates={"debug": "print({expr}=)"})
     try:
         postfix.load_ipython_extension(ip)
         ip.run_line_magic("postfix_template", "add temp repr({expr})")
@@ -308,9 +333,7 @@ def test_unload_restores_existing_postfix_template_magic():
     ip = get_ipython()
     original = lambda line: line
     previous = ip.magics_manager.magics["line"].get("postfix_template")
-    previous_attr = getattr(
-        ip.magics_manager.user_magics, "postfix_template", None
-    )
+    previous_attr = getattr(ip.magics_manager.user_magics, "postfix_template", None)
     had_previous_attr = hasattr(ip.magics_manager.user_magics, "postfix_template")
     ip.register_magic_function(original, "line", "postfix_template")
     try:
@@ -409,6 +432,216 @@ def test_exact_postfix_tab_preserves_indentation():
 
     assert postfix._expand_buffer(buffer)
     assert buffer.text == "    print(x)"
+
+
+def test_var_tab_expands_and_selects_default_name():
+    source = '"hello".var'
+    buffer = Buffer(document=Document(source, cursor_position=len(source)))
+
+    assert postfix._expand_buffer(buffer)
+    assert buffer.text == 'key = "hello"'
+    assert buffer.cursor_position == len("key")
+    assert list(buffer.document.selection_ranges()) == [(0, len("key"))]
+    assert buffer.selection_state is not None
+    assert buffer.selection_state.shift_mode
+
+
+def test_var_placeholder_typing_replaces_default_name():
+    source = '"hello".var'
+    buffer = Buffer(document=Document(source, cursor_position=len(source)))
+    postfix._expand_buffer(buffer)
+
+    buffer.cut_selection()
+    buffer.insert_text("message")
+
+    assert buffer.text == 'message = "hello"'
+
+
+def test_var_placeholder_tab_accepts_default_name():
+    source = '"hello".var'
+    buffer = Buffer(document=Document(source, cursor_position=len(source)))
+    postfix._expand_buffer(buffer)
+
+    assert postfix._accept_placeholder(buffer)
+    assert buffer.text == 'key = "hello"'
+    assert buffer.cursor_position == len(buffer.text)
+    assert buffer.selection_state is None
+
+
+@pytest.mark.parametrize(
+    "keys, expected",
+    [
+        ('"hello".var\t\t\r', 'key = "hello"'),
+        ('"hello".var\t\r\r', 'key = "hello"'),
+        ('"hello".var\tmessage\r', 'message = "hello"'),
+    ],
+)
+def test_var_placeholder_prompt_key_flow(keys, expected):
+    assert _run_prompt_keys(keys) == expected
+
+
+@pytest.mark.parametrize(
+    "marked, width",
+    [
+        ("'hello|'", 1),
+        ('"hello|"', 1),
+        ("r'hello|'", 1),
+        ('b"hello|"', 1),
+        ('f"hello|"', 1),
+        ("'''hello|'''", 3),
+        ('r"""hello|"""', 3),
+        ('"""hello\n|"""', 3),
+    ],
+)
+def test_smart_tab_detects_string_closers(marked, width):
+    source, cursor = _marked_source(marked)
+
+    assert postfix._smart_tab_jump_width(source, cursor) == width
+
+
+@pytest.mark.parametrize(
+    "marked",
+    [
+        "call(value|)",
+        "items[index|]",
+        "{'name': value|}",
+        "list[dict[str, int|]]",
+        "call(\n    value|)",
+        'print(f"{name|}")',
+        "print(f\"{mapping['name']|}\")",
+    ],
+)
+def test_smart_tab_detects_bracket_closers(marked):
+    source, cursor = _marked_source(marked)
+
+    assert postfix._smart_tab_jump_width(source, cursor) == 1
+
+
+@pytest.mark.parametrize(
+    "marked",
+    [
+        '"text|)"',
+        "call(  # ignored |)\n",
+        "([|)]",
+        "value|)",
+        'f"{{name|}}"',
+        "f\"{'ignored |}'}\"",
+        "value |< other",
+        "mapping|: value",
+        "call(value|, other)",
+    ],
+)
+def test_smart_tab_rejects_non_syntactic_closers(marked):
+    source, cursor = _marked_source(marked)
+
+    assert postfix._smart_tab_jump_width(source, cursor) == 0
+
+
+def test_smart_tab_rejects_escaped_quote():
+    source, cursor = _marked_source(r'"escaped \|" quote"')
+
+    assert postfix._smart_tab_jump_width(source, cursor) == 0
+
+
+def test_smart_tab_leaves_leading_whitespace_for_native_indent():
+    source, cursor = _marked_source("call(\n    |)\n")
+
+    assert postfix._smart_tab_jump_width(source, cursor) == 0
+
+
+def test_python_311_fstring_fallback_handles_fields_and_format_specs():
+    basic, basic_cursor = _marked_source('f"{name|}"')
+    nested, nested_cursor = _marked_source('f"{value:{width|}}"')
+    outer, outer_cursor = _marked_source('f"{value:{width}|}"')
+
+    assert postfix._fstring_brace_is_closing(basic, basic_cursor)
+    assert postfix._fstring_brace_is_closing(nested, nested_cursor)
+    assert postfix._fstring_brace_is_closing(outer, outer_cursor)
+
+
+@pytest.mark.parametrize(
+    "keys, expected",
+    [
+        ('"hello"\x02\t\r', '"hello"'),
+        ('"""hello"""\x02\x02\x02\t\r', '"""hello"""'),
+        ('print("hello")\x02\x02\t\t\r', 'print("hello")'),
+        ("items[index]\x02\t\r", "items[index]"),
+        ('print(f"{name}")\x02\x02\x02\t\t\t\r', 'print(f"{name}")'),
+    ],
+)
+def test_smart_tab_prompt_key_flow(keys, expected):
+    assert _run_prompt_keys(keys) == expected
+
+
+def test_smart_tab_cancels_completion_menu_before_moving():
+    source, cursor = _marked_source('"hello|"')
+    buffer = Buffer(document=Document(source, cursor_position=cursor))
+    cancelled = []
+    buffer.complete_state = Mock()
+
+    def cancel_completion():
+        cancelled.append(True)
+        buffer.complete_state = None
+
+    buffer.cancel_completion = cancel_completion
+
+    assert postfix._jump_over_closer(buffer)
+    assert cancelled == [True]
+    assert buffer.cursor_position == cursor + 1
+
+
+def test_smart_tab_config_can_disable_jump():
+    config = postfix.PostfixCompletionConfig()
+    config.smart_tab_jump = False
+    state = postfix.PostfixState(postfix.postfix_matcher, config)
+    source, cursor = _marked_source('"hello|"')
+    buffer = Buffer(document=Document(source, cursor_position=cursor))
+
+    assert not postfix._can_smart_tab_jump(buffer, state)
+
+
+@pytest.mark.parametrize(
+    "keys, expected",
+    [
+        ("value\t\r", "value    "),
+        ("    )\x02\t\r", "        )"),
+    ],
+)
+def test_smart_tab_keeps_native_tab_fallback(keys, expected):
+    assert _run_prompt_keys(keys, _bindings_with_tab_fallback()) == expected
+
+
+def test_disabled_smart_tab_uses_native_tab_fallback():
+    config = postfix.PostfixCompletionConfig()
+    config.smart_tab_jump = False
+    state = postfix.PostfixState(postfix.postfix_matcher, config)
+
+    assert (
+        _run_prompt_keys('"hello"\x02\t\r', _bindings_with_tab_fallback(state))
+        == '"hello    "'
+    )
+
+
+def test_ipython_config_disables_smart_tab_jump():
+    ip = get_ipython()
+    old_values, missing = _set_postfix_config(ip, smart_tab_jump=False)
+    try:
+        postfix.load_ipython_extension(ip)
+        state = getattr(ip.meta, "postfix_completion")
+        assert state.config.smart_tab_jump is False
+    finally:
+        postfix.unload_ipython_extension(ip)
+        _restore_postfix_config(ip, old_values, missing)
+
+
+def test_exact_postfix_has_priority_over_smart_tab_jump():
+    source, cursor = _marked_source("call(\nx.print|)")
+    buffer = Buffer(document=Document(source, cursor_position=cursor))
+
+    assert postfix._smart_tab_jump_width(source, cursor) == 1
+    assert not postfix._can_smart_tab_jump(buffer)
+    assert postfix._expand_buffer(buffer)
+    assert buffer.text == "call(\nprint(x))"
 
 
 def test_insert_trigger_starts_completion_for_valid_expression():
