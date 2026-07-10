@@ -166,11 +166,25 @@ Then inside IPython:
 
 ## Publish
 
-Upload to PyPI:
+Publishing uses GitHub Actions and PyPI Trusted Publishing. Configure the
+existing PyPI project once under **Manage > Publishing > Add a new publisher**:
+
+| Setting | Value |
+| --- | --- |
+| Owner | `fishandsheep` |
+| Repository | `ipython-postfix-completion` |
+| Workflow | `publish.yml` |
+| Environment | `pypi` |
+
+For each release, update `project.version` in `pyproject.toml`, commit and push
+the change, then create a matching `v` tag. For example, after changing the
+version to `0.1.1`:
 
 ```bash
-uv run --extra dev python -m twine upload dist/*
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
-After the first upload creates the project on PyPI, prefer a project-scoped API
-token for future releases.
+The workflow verifies the tag against `project.version`, runs tests, builds and
+checks both distributions, then publishes them to PyPI using a short-lived OIDC
+credential. The already-published `0.1.0` release cannot be uploaded again.
