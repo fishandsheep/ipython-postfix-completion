@@ -53,6 +53,8 @@ DEFAULT_TEMPLATES: dict[str, str] = {
     "len": "len({expr})",
     "not": "not {expr}",
     "par": "({expr})",
+    "var": "{expr} = ",
+    "await": "await {expr}",
     "return": "return {expr}",
     "if": "if {expr}:\n{indent}    ",
     "while": "while {expr}:\n{indent}    ",

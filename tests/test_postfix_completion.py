@@ -66,6 +66,8 @@ def test_postfix_matcher_expands_basic_templates():
     [
         ("not", "x.not", "not x"),
         ("par", "x.par", "(x)"),
+        ("var", "result.var", "result = "),
+        ("await", "task.await", "await task"),
         ("return", "x.return", "return x"),
         ("if", "x.if", "if x:\n    "),
         ("while", "x.while", "while x:\n    "),
