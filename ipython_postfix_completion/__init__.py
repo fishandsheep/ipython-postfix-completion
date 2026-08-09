@@ -7,8 +7,8 @@ import io
 import re
 import string
 import tokenize
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from IPython.core.completer import (
     CompletionContext,
@@ -17,12 +17,10 @@ from IPython.core.completer import (
 )
 from IPython.core.error import UsageError
 from IPython.terminal.ptutils import IPythonPTCompleter
+from traitlets import Bool, Unicode
 from traitlets import Dict as TraitletsDict
-from traitlets import Bool
 from traitlets import List as TraitletsList
-from traitlets import Unicode
 from traitlets.config.configurable import Configurable
-
 
 _POSTFIX_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<body>.*)\.(?P<prefix>[A-Za-z_]*)$")
 _PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -34,7 +32,7 @@ _ALLOWED_TEMPLATE_FIELDS = {"expr", "indent"}
 _MAGIC_NAME = "postfix_template"
 _NO_MAGIC = object()
 _NO_MAGIC_ATTR = object()
-_ACTIVE_STATE: "PostfixState | None" = None
+_ACTIVE_STATE: PostfixState | None = None
 _VAR_TEMPLATE = "key = {expr}"
 _VAR_PLACEHOLDER = "key"
 _PLACEHOLDER_ATTR = "_postfix_completion_placeholder"
@@ -107,11 +105,21 @@ def _validate_template_name(name: str) -> None:
 
 
 def _validate_template(template: str) -> None:
-    fields = {
-        field_name
-        for _, field_name, _, _ in _FORMATTER.parse(template)
-        if field_name is not None
-    }
+    try:
+        parsed = list(_FORMATTER.parse(template))
+    except ValueError as error:
+        raise UsageError(f"Invalid postfix template: {error}") from error
+
+    fields = set()
+    for _, field_name, format_spec, conversion in parsed:
+        if field_name is None:
+            continue
+        if format_spec or conversion is not None:
+            raise UsageError(
+                "Postfix template fields must use plain {expr} or {indent}."
+            )
+        fields.add(field_name)
+
     unknown = fields - _ALLOWED_TEMPLATE_FIELDS
     if unknown:
         names = ", ".join(sorted(f"{{{name}}}" for name in unknown))
@@ -505,9 +513,12 @@ def _string_closer_width(
         if token_type is not None
     }
     for token, start, end in tokens:
-        if token.type in fstring_end_types and start == cursor:
-            if token.string in {"'", '"', "'''", '"""'}:
-                return len(token.string)
+        if (
+            token.type in fstring_end_types
+            and start == cursor
+            and token.string in {"'", '"', "'''", '"""'}
+        ):
+            return len(token.string)
         if token.type != tokenize.STRING:
             continue
         parts = _string_parts(token.string)

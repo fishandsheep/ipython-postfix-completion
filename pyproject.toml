@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ipython-postfix-completion"
-version = "0.1.1"
+version = "0.2.0"
 description = "Configurable postfix completion extension for IPython."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,10 +21,11 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "ipython>=9.0",
+    "ipython>=9.0,<10",
     "traitlets>=5.13",
 ]
 
@@ -34,9 +35,17 @@ test = [
 ]
 dev = [
     "build",
+    "pip-audit>=2.7",
+    "ruff>=0.8",
     "twine",
     "ipython-postfix-completion[test]",
 ]
+
+[project.urls]
+Homepage = "https://github.com/fishandsheep/ipython-postfix-completion"
+Repository = "https://github.com/fishandsheep/ipython-postfix-completion"
+Issues = "https://github.com/fishandsheep/ipython-postfix-completion/issues"
+Changelog = "https://github.com/fishandsheep/ipython-postfix-completion/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["ipython_postfix_completion*"]

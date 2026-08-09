@@ -1,12 +1,11 @@
 from unittest.mock import Mock
 
 import pytest
-
 from IPython import get_ipython
 from IPython.core.completer import provisionalcompleter
 from IPython.core.error import UsageError
-from IPython.terminal.shortcuts import create_ipython_shortcuts
 from IPython.terminal.ptutils import IPythonPTCompleter
+from IPython.terminal.shortcuts import create_ipython_shortcuts
 from prompt_toolkit import PromptSession
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
@@ -299,6 +298,9 @@ def test_postfix_template_magic_reset_all():
         ("add 1bad print({expr})", "Invalid postfix template name"),
         ("add bad print(x)", "must include {expr}"),
         ("add bad print({foo})", "unknown field"),
+        ("add bad print({expr:{foo}})", "plain {expr} or {indent}"),
+        ("add bad print({expr!r})", "plain {expr} or {indent}"),
+        ("add bad print({expr)", "Invalid postfix template"),
     ],
 )
 def test_postfix_template_magic_rejects_invalid_templates(line, message):
@@ -372,14 +374,8 @@ def test_load_and_unload_register_matcher_and_restore_key_bindings():
         assert postfix.postfix_matcher in ip.Completer.custom_matchers
         assert ip.pt_app.key_bindings is not original_key_bindings
         assert ip.pt_app.completer is not original_completer
-        assert (
-            getattr(ip.meta, "postfix_completion").original_key_bindings
-            is original_key_bindings
-        )
-        assert (
-            getattr(ip.meta, "postfix_completion").original_completer
-            is original_completer
-        )
+        assert ip.meta.postfix_completion.original_key_bindings is original_key_bindings
+        assert ip.meta.postfix_completion.original_completer is original_completer
 
         postfix.unload_ipython_extension(ip)
 
@@ -399,7 +395,7 @@ def test_load_without_prompt_toolkit_app_only_registers_matcher():
     try:
         postfix.load_ipython_extension(ip)
         assert postfix.postfix_matcher in ip.Completer.custom_matchers
-        assert getattr(ip.meta, "postfix_completion").original_key_bindings is None
+        assert ip.meta.postfix_completion.original_key_bindings is None
     finally:
         postfix.unload_ipython_extension(ip)
         ip.pt_app = old_pt_app
@@ -627,7 +623,7 @@ def test_ipython_config_disables_smart_tab_jump():
     old_values, missing = _set_postfix_config(ip, smart_tab_jump=False)
     try:
         postfix.load_ipython_extension(ip)
-        state = getattr(ip.meta, "postfix_completion")
+        state = ip.meta.postfix_completion
         assert state.config.smart_tab_jump is False
     finally:
         postfix.unload_ipython_extension(ip)

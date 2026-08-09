@@ -32,6 +32,10 @@ To load it automatically, add this to `ipython_config.py`:
 c.InteractiveShellApp.extensions = ["ipython_postfix_completion"]
 ```
 
+Smart Tab key bindings are supported in terminal IPython. Postfix matcher
+completion can also work in other IPython frontends, but this package does not
+promise frontend-specific Tab behavior outside the terminal.
+
 ## Quick Example: Add a `for` Template
 
 Add a template for the current IPython session:
@@ -130,6 +134,10 @@ While `key` remains selected:
 - Enter behaves like Tab for this selection only; press Enter again to submit.
 - Any other typed text replaces `key` with a custom variable name.
 
+In 0.1.x, `.var` produced `expr = ` with the cursor after the assignment
+target. Version 0.2.0 changes this to `key = expr` with an editable
+placeholder; use a custom template if you need the old behavior.
+
 ## Smart Tab Jump
 
 When cursor is immediately before a valid Python closing token, Tab moves over
@@ -183,6 +191,9 @@ Run tests:
 
 ```bash
 uv run --extra test pytest -q
+uv run --extra dev ruff check .
+uv run --extra dev ruff format --check .
+uv run --isolated --no-project --with "ipython>=9,<10" --with "traitlets>=5.13" --with "pip-audit>=2.7" pip-audit --strict --local
 ```
 
 Build and check release artifacts:
@@ -221,14 +232,16 @@ existing PyPI project once under **Manage > Publishing > Add a new publisher**:
 | Environment | `pypi` |
 
 For each release, update `project.version` in `pyproject.toml`, commit and push
-the change, then create a matching `v` tag. For example, after changing the
-version to `0.1.1`:
+the change, then create a matching `v` tag. For this release:
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 The workflow verifies the tag against `project.version`, runs tests, builds and
 checks both distributions, then publishes them to PyPI using a short-lived OIDC
-credential. The already-published `0.1.0` release cannot be uploaded again.
+credential. PyPI versions are immutable: never reuse a published version or tag;
+fixes require the next version.
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes and migration guidance.
