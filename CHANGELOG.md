@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here.
 
+## [0.2.1] - 2026-10-05
+
+### Added
+
+- Added built-in `.for`, `.fori`, `.ef`, `.type`, and `.range` templates.
+- Added editable, sequential Tab stops for loop and conditional templates,
+  with Shift+Tab navigation to previous stops.
+- Wrapped integer literals in `range(...)` for `.for` and `.fori` templates.
+
+### Changed
+
+- Updated the built-in `.if` template to include an editable `pass` body.
+- Simplified the README and moved detailed usage and maintenance notes to
+  `docs/REFERENCE.md`.
+
 ## [0.2.0] - 2026-08-09
 
 ### Added

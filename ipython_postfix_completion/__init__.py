@@ -35,6 +35,19 @@ _NO_MAGIC_ATTR = object()
 _ACTIVE_STATE: PostfixState | None = None
 _VAR_TEMPLATE = "key = {expr}"
 _VAR_PLACEHOLDER = "key"
+_FOR_TEMPLATE = "for item in {expr}:\n{indent}    pass"
+_FORI_TEMPLATE = "for i, value in enumerate({expr}):\n{indent}    pass"
+_IF_TEMPLATE = "if {expr}:\n{indent}    pass"
+_EF_TEMPLATE = (
+    "if {expr}:\n{indent}    pass\n{indent}elif cond:\n{indent}    pass"
+    "\n{indent}else:\n{indent}    pass"
+)
+_TEMPLATE_PLACEHOLDERS = {
+    "for": (_FOR_TEMPLATE, ("item", "pass")),
+    "fori": (_FORI_TEMPLATE, ("i", "value", "pass")),
+    "if": (_IF_TEMPLATE, ("pass",)),
+    "ef": (_EF_TEMPLATE, ("pass", "cond", "pass", "pass")),
+}
 _PLACEHOLDER_ATTR = "_postfix_completion_placeholder"
 _OPENING_BRACKETS = {"(": ")", "[": "]", "{": "}"}
 _CLOSING_BRACKETS = {closer: opener for opener, closer in _OPENING_BRACKETS.items()}
@@ -59,8 +72,11 @@ DEFAULT_TEMPLATES: dict[str, str] = {
     "var": _VAR_TEMPLATE,
     "await": "await {expr}",
     "return": "return {expr}",
-    "if": "if {expr}:\n{indent}    ",
+    "if": _IF_TEMPLATE,
     "while": "while {expr}:\n{indent}    ",
+    "for": _FOR_TEMPLATE,
+    "fori": _FORI_TEMPLATE,
+    "ef": _EF_TEMPLATE,
     "raise": "raise {expr}",
     "yield": "yield {expr}",
     "str": "str({expr})",
@@ -68,6 +84,8 @@ DEFAULT_TEMPLATES: dict[str, str] = {
     "set": "set({expr})",
     "dict": "dict({expr})",
     "tuple": "tuple({expr})",
+    "type": "type({expr})",
+    "range": "range({expr})",
 }
 
 
@@ -141,6 +159,30 @@ def _validate_templates(templates: dict[str, str]) -> None:
 
 def _render_template(template: str, expr: str, indent: str = "") -> str:
     return _FORMATTER.format(template, expr=expr, indent=indent)
+
+
+def _is_integer_literal(expr: str) -> bool:
+    try:
+        node = ast.parse(expr, mode="eval").body
+    except SyntaxError:
+        return False
+    if isinstance(node, ast.Constant):
+        return type(node.value) is int
+    return (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, (ast.UAdd, ast.USub))
+        and _is_integer_literal(ast.unparse(node.operand))
+    )
+
+
+def _render_candidate(name: str, template: str, expr: str, indent: str = "") -> str:
+    wraps_integer = _is_integer_literal(expr) and (
+        (name == "for" and template == _FOR_TEMPLATE)
+        or (name == "fori" and template == _FORI_TEMPLATE)
+    )
+    if wraps_integer:
+        expr = f"range({expr})"
+    return _render_template(template, expr, indent)
 
 
 @dataclass
@@ -244,7 +286,7 @@ def _effective_templates(state: PostfixState | None = None) -> dict[str, str]:
 def _apply_template(
     name: str, expr: str, indent: str = "", state: PostfixState | None = None
 ) -> str:
-    return _render_template(_effective_templates(state)[name], expr, indent)
+    return _render_candidate(name, _effective_templates(state)[name], expr, indent)
 
 
 def _postfix_candidates(
@@ -264,7 +306,7 @@ def _postfix_candidates(
         if (name == prefix if exact else name.startswith(prefix))
     ]
     return f"{expr}.{prefix}", [
-        _render_template(templates[name], expr, indent) for name in names
+        _render_candidate(name, templates[name], expr, indent) for name in names
     ]
 
 
@@ -278,7 +320,7 @@ def _template_name(
     for name, template in _effective_templates(state).items():
         if not name.startswith(prefix):
             continue
-        if _render_template(template, expr, indent) == expansion:
+        if _render_candidate(name, template, expr, indent) == expansion:
             return name
     return None
 
@@ -306,7 +348,28 @@ def _expand_buffer(buffer) -> bool:
     buffer.delete_before_cursor(len(matched_fragment))
     expansion_start = buffer.cursor_position
     buffer.insert_text(candidates[0])
+    placeholder_config = (
+        _TEMPLATE_PLACEHOLDERS.get(parsed[2]) if parsed is not None else None
+    )
     if (
+        parsed is not None
+        and placeholder_config is not None
+        and _effective_templates().get(parsed[2]) == placeholder_config[0]
+    ):
+        search_from = 0
+        ranges = []
+        for placeholder_text in placeholder_config[1]:
+            start = candidates[0].index(placeholder_text, search_from)
+            end = start + len(placeholder_text)
+            ranges.append((start, end))
+            search_from = end
+        _select_placeholders(
+            buffer,
+            expansion_start,
+            ranges,
+            buffer.cursor_position,
+        )
+    elif (
         parsed is not None
         and parsed[2] == "var"
         and _effective_templates().get("var") == _VAR_TEMPLATE
@@ -321,35 +384,93 @@ def _expand_buffer(buffer) -> bool:
 
 
 def _select_placeholder(buffer, start: int, end: int, final_cursor: int) -> None:
+    _select_placeholders(buffer, start, [(start, end)], final_cursor, absolute=True)
+
+
+def _select_placeholders(
+    buffer,
+    start: int,
+    ranges: list[tuple[int, int]],
+    final_cursor: int,
+    *,
+    absolute: bool = False,
+    index: int = 0,
+) -> None:
     from prompt_toolkit.selection import SelectionState, SelectionType
 
-    buffer.cursor_position = end
-    buffer.selection_state = SelectionState(start, SelectionType.CHARACTERS)
+    if not absolute:
+        ranges = [(start + left, start + right) for left, right in ranges]
+    setattr(buffer, _PLACEHOLDER_ATTR, (ranges, index, final_cursor))
+    left, right = ranges[index]
+    buffer.cursor_position = right
+    buffer.selection_state = SelectionState(left, SelectionType.CHARACTERS)
     buffer.selection_state.enter_shift_mode()
-    setattr(buffer, _PLACEHOLDER_ATTR, (start, end, final_cursor))
 
 
 def _has_active_placeholder(buffer) -> bool:
     placeholder = getattr(buffer, _PLACEHOLDER_ATTR, None)
     selection = buffer.selection_state
-    if placeholder is None or selection is None:
+    if placeholder is None:
         return False
-    start, end, _ = placeholder
-    return (
-        selection.shift_mode
+    ranges, index, _ = placeholder
+    start, end = ranges[index]
+    return (selection is None and len(ranges) > 1) or (
+        selection is not None
+        and selection.shift_mode
         and selection.original_cursor_position == start
         and buffer.cursor_position == end
-        and buffer.text[start:end] == _VAR_PLACEHOLDER
+        and (len(ranges) > 1 or buffer.text[start:end] == _VAR_PLACEHOLDER)
     )
 
 
 def _accept_placeholder(buffer) -> bool:
     if not _has_active_placeholder(buffer):
         return False
-    _, _, final_cursor = getattr(buffer, _PLACEHOLDER_ATTR)
-    buffer.exit_selection()
-    buffer.cursor_position = final_cursor
-    delattr(buffer, _PLACEHOLDER_ATTR)
+    ranges, index, final_cursor = _update_placeholder_after_edit(buffer)
+    if buffer.selection_state is not None:
+        buffer.exit_selection()
+    if index + 1 < len(ranges):
+        _select_placeholders(
+            buffer, 0, ranges, final_cursor, absolute=True, index=index + 1
+        )
+    else:
+        delattr(buffer, _PLACEHOLDER_ATTR)
+        buffer.cursor_position = final_cursor
+    return True
+
+
+def _update_placeholder_after_edit(buffer):
+    ranges, index, final_cursor = getattr(buffer, _PLACEHOLDER_ATTR)
+    if buffer.selection_state is None:
+        start, old_end = ranges[index]
+        new_end = buffer.cursor_position
+        delta = new_end - old_end
+        final_cursor += delta
+        ranges = [
+            (start, new_end)
+            if stop == index
+            else (left + delta, right + delta)
+            if stop > index
+            else (left, right)
+            for stop, (left, right) in enumerate(ranges)
+        ]
+        setattr(buffer, _PLACEHOLDER_ATTR, (ranges, index, final_cursor))
+    return ranges, index, final_cursor
+
+
+def _reverse_placeholder(buffer) -> bool:
+    if not _has_active_placeholder(buffer):
+        return False
+    ranges, index, final_cursor = _update_placeholder_after_edit(buffer)
+    previous_index = max(0, index - 1)
+    _select_placeholders(
+        buffer,
+        0,
+        ranges,
+        final_cursor,
+        absolute=True,
+        index=previous_index,
+    )
     return True
 
 
@@ -656,6 +777,10 @@ def _make_key_bindings(state: PostfixState | None = None):
     @key_bindings.add("tab", filter=has_active_placeholder)
     def accept_placeholder(event) -> None:
         _accept_placeholder(event.current_buffer)
+
+    @key_bindings.add("s-tab", filter=has_active_placeholder)
+    def reverse_placeholder(event) -> None:
+        _reverse_placeholder(event.current_buffer)
 
     @key_bindings.add("enter", filter=has_active_placeholder)
     def accept_placeholder_with_enter(event) -> None:

@@ -1,247 +1,80 @@
 # IPython Postfix Completion
 
-Configurable postfix completion extension for IPython.
-
-Package on PyPI: `ipython-postfix-completion`
+Complete Python expressions with postfix templates in IPython: type an
+expression, a dot, and a template name, then press Tab.
 
 ## Install
-
-Install into the current Python environment with `uv`:
-
-```bash
-uvx --with ipython-postfix-completion ipython
-```
-
-Install into the current ipython environment with `uv`:
 
 ```bash
 uv tool install ipython --with ipython-postfix-completion
 ```
 
-## Load
-
-Inside IPython:
+Start IPython and load the extension:
 
 ```python
 %load_ext ipython_postfix_completion
 ```
 
-To load it automatically, add this to `ipython_config.py`:
+## Common Templates
 
-```python
-c.InteractiveShellApp.extensions = ["ipython_postfix_completion"]
-```
-
-Smart Tab key bindings are supported in terminal IPython. Postfix matcher
-completion can also work in other IPython frontends, but this package does not
-promise frontend-specific Tab behavior outside the terminal.
-
-## Quick Example: Add a `for` Template
-
-Add a template for the current IPython session:
-
-```python
-%postfix_template add for "for item in {expr}:\n{indent}    "
-```
-
-Use it:
-
-```python
-items.for<Tab>
-```
-
-It expands to:
+`items.for<Tab>` creates a loop. Tab selects `item`, then `pass`; type to
+replace a selection.
 
 ```python
 for item in items:
-    
+    pass
 ```
 
-Runtime templates only affect the current IPython session. Put templates in
-`ipython_config.py` if you want them to persist.
+An integer literal is wrapped in `range(...)`, so `10.for<Tab>` produces
+`for item in range(10):`.
 
-## Runtime Magic
+`items.fori<Tab>` creates an indexed loop. Tab selects `i`, `value`, then
+`pass`. For an integer literal, it uses `enumerate(range(n))`.
 
-List effective templates:
+`condition.if<Tab>` creates an `if` block with a selected `pass`:
 
 ```python
-%postfix_template list
+if condition:
+    pass
 ```
 
-Add or override a template for the current session:
+`condition.ef<Tab>` creates `if`/`elif`/`else` branches. Tab selects each
+placeholder in order: `pass`, `cond`, `pass`, `pass`. The `cond` selection
+does not include its colon.
 
-```python
-%postfix_template add debug "print({expr}=)"
-%postfix_template add forin "for item in {expr}:\n{indent}    "
+Other built-ins: `print`, `len`, `not`, `par`, `var`, `await`, `return`,
+`while`, `raise`, `yield`, `str`, `list`, `set`, `dict`, `tuple`, `type`, and
+`range`. Use `%postfix_template list` to see their expansions.
+
+Shift+Tab moves back to the previous placeholder. Custom Tab navigation is
+supported in terminal IPython.
+
+## Load Automatically
+
+The default configuration file is:
+
+```text
+~/.ipython/profile_default/ipython_config.py
 ```
 
-Disable a template for the current session:
+Create it with:
 
-```python
-%postfix_template remove tuple
+```bash
+ipython profile create
 ```
 
-Reset one runtime change:
+Add the extension and any persistent templates there:
 
 ```python
-%postfix_template reset forin
-```
-
-Reset all runtime changes:
-
-```python
-%postfix_template reset --all
-```
-
-## Persistent Config
-
-Add persistent templates in `ipython_config.py`:
-
-```python
+c.InteractiveShellApp.extensions = ["ipython_postfix_completion"]
 c.PostfixCompletionConfig.templates = {
     "debug": "print({expr}=)",
-    "forin": "for item in {expr}:\n{indent}    ",
 }
-
-c.PostfixCompletionConfig.disabled_templates = ["tuple"]
 ```
 
-Smart Tab jump is enabled by default. Disable it while keeping postfix
-completion with:
+`IPYTHONDIR` and `--ipython-dir` can change the configuration directory. Use
+`ipython locate profile default` to find the active profile. See the [official
+IPython configuration guide](https://ipython.readthedocs.io/en/stable/development/config.html).
 
-```python
-c.PostfixCompletionConfig.smart_tab_jump = False
-```
-
-Template names must match `[A-Za-z_][A-Za-z0-9_]*`.
-
-Templates must include `{expr}` and may also use `{indent}`. No other template
-fields are allowed.
-
-## `.var` Placeholder
-
-The built-in `.var` template creates an assignment and selects `key` as an
-editable placeholder:
-
-```text
-"hello".var<Tab>  ->  key = "hello"
-                       ^^^ selected
-```
-
-While `key` remains selected:
-
-- Tab accepts `key` and moves cursor to the end of the assignment.
-- Enter behaves like Tab for this selection only; press Enter again to submit.
-- Any other typed text replaces `key` with a custom variable name.
-
-In 0.1.x, `.var` produced `expr = ` with the cursor after the assignment
-target. Version 0.2.0 changes this to `key = expr` with an editable
-placeholder; use a custom template if you need the old behavior.
-
-## Smart Tab Jump
-
-When cursor is immediately before a valid Python closing token, Tab moves over
-it without changing source text. Repeated Tab presses exit nested constructs:
-
-```text
-"hello|"                 -> "hello"|
-print("hello|")          -> print("hello"|) -> print("hello")|
-print(f"{name|}")        -> print(f"{name}|") -> print(f"{name}"|) -> print(f"{name}")|
-items[index|]            -> items[index]|
-list[dict[str, int|]]    -> list[dict[str, int]|] -> list[dict[str, int]]|
-{"name": value|}         -> {"name": value}|
-```
-
-`|` marks cursor and is not typed. Supported closers are single and triple
-quotes plus `)`, `]`, and `}`. Detection follows Python tokens, including
-multiline input, string prefixes, and f-string expressions. Tab still accepts
-the `.var` name selection or an exact postfix template first; otherwise it
-falls back to IPython completion or indentation. Ambiguous `< >`, colon, and
-comma are intentionally excluded.
-
-## Built-in Templates
-
-Default templates:
-
-| Name | Expansion |
-| --- | --- |
-| `print` | `print({expr})` |
-| `len` | `len({expr})` |
-| `not` | `not {expr}` |
-| `par` | `({expr})` |
-| `var` | `key = {expr}`; selects `key`; Tab or Enter accepts it |
-| `await` | `await {expr}` |
-| `return` | `return {expr}` |
-| `if` | `if {expr}:\n{indent}    ` |
-| `while` | `while {expr}:\n{indent}    ` |
-| `raise` | `raise {expr}` |
-| `yield` | `yield {expr}` |
-| `str` | `str({expr})` |
-| `list` | `list({expr})` |
-| `set` | `set({expr})` |
-| `dict` | `dict({expr})` |
-| `tuple` | `tuple({expr})` |
-
-Use `%postfix_template list` in IPython to see the exact effective set, including
-custom and disabled templates.
-
-## Local Validation
-
-Run tests:
-
-```bash
-uv run --extra test pytest -q
-uv run --extra dev ruff check .
-uv run --extra dev ruff format --check .
-uv run --isolated --no-project --with "ipython>=9,<10" --with "traitlets>=5.13" --with "pip-audit>=2.7" pip-audit --strict --local
-```
-
-Build and check release artifacts:
-
-```bash
-uv run --extra dev python -m build
-uv run --extra dev python -m twine check dist/*
-```
-
-Validate the wheel in a clean local virtual environment:
-
-```bash
-uv venv .venv-check
-uv pip install --python .venv-check/bin/python dist/*.whl
-.venv-check/bin/ipython
-```
-
-Then inside IPython:
-
-```python
-%load_ext ipython_postfix_completion
-%postfix_template add for "for item in {expr}:\n{indent}    "
-%postfix_template list
-```
-
-## Publish
-
-Publishing uses GitHub Actions and PyPI Trusted Publishing. Configure the
-existing PyPI project once under **Manage > Publishing > Add a new publisher**:
-
-| Setting | Value |
-| --- | --- |
-| Owner | `fishandsheep` |
-| Repository | `ipython-postfix-completion` |
-| Workflow | `publish.yml` |
-| Environment | `pypi` |
-
-For each release, update `project.version` in `pyproject.toml`, commit and push
-the change, then create a matching `v` tag. For this release:
-
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-The workflow verifies the tag against `project.version`, runs tests, builds and
-checks both distributions, then publishes them to PyPI using a short-lived OIDC
-credential. PyPI versions are immutable: never reuse a published version or tag;
-fixes require the next version.
-
-See [CHANGELOG.md](CHANGELOG.md) for release notes and migration guidance.
+For runtime template commands, detailed behavior, and contributor or release
+steps, see [the extended guide](docs/REFERENCE.md).

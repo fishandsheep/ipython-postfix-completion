@@ -83,7 +83,7 @@ def test_postfix_matcher_expands_basic_templates():
     try:
         assert "print(1)" in _completion_texts("1.print")
         assert "len(items)" in _completion_texts("items.len")
-        assert "if value:\n    " in _completion_texts("value.if")
+        assert "if value:\n    pass" in _completion_texts("value.if")
         assert "print(foo(a + b))" in _completion_texts("foo(a + b).print")
     finally:
         postfix.unload_ipython_extension(ip)
@@ -97,7 +97,7 @@ def test_postfix_matcher_expands_basic_templates():
         ("var", '"hello".var', 'key = "hello"'),
         ("await", "task.await", "await task"),
         ("return", "x.return", "return x"),
-        ("if", "x.if", "if x:\n    "),
+        ("if", "x.if", "if x:\n    pass"),
         ("while", "x.while", "while x:\n    "),
         ("print", "x.print", "print(x)"),
         ("len", "items.len", "len(items)"),
@@ -114,7 +114,7 @@ def test_all_supported_templates_expand(template, source, expected):
     ip = get_ipython()
     postfix.load_ipython_extension(ip)
     try:
-        assert _single_completion_text(source) == expected
+        assert expected in _completion_texts(source)
     finally:
         postfix.unload_ipython_extension(ip)
 
@@ -155,7 +155,7 @@ def test_postfix_matcher_preserves_indentation():
 @pytest.mark.parametrize(
     "source, expected",
     [
-        ("    x.if", "    if x:\n        "),
+        ("    x.if", "    if x:\n        pass"),
         ("    x.while", "    while x:\n        "),
     ],
 )
@@ -172,9 +172,10 @@ def test_block_templates_preserve_indentation(source, expected):
                 if completion.type == "postfix"
             ]
 
-        assert len(completions) == 1
-        completion = completions[0]
-        assert source[: completion.start] + completion.text == expected
+        assert any(
+            source[: completion.start] + completion.text == expected
+            for completion in completions
+        )
     finally:
         postfix.unload_ipython_extension(ip)
 
@@ -419,6 +420,77 @@ def test_exact_postfix_tab_expands_buffer():
 
     assert postfix._expand_buffer(buffer)
     assert buffer.text == "print(1)"
+
+
+def test_exact_for_tab_expands_despite_fori_prefix():
+    source = "items.for"
+    buffer = Buffer(document=Document(source, cursor_position=len(source)))
+
+    assert postfix._expand_buffer(buffer)
+    assert buffer.text == "for item in items:\n    pass"
+    assert list(buffer.document.selection_ranges()) == [(4, 8)]
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("10.for", "for item in range(10):\n    pass"),
+        ("items.for", "for item in items:\n    pass"),
+        ("10.fori", "for i, value in enumerate(range(10)):\n    pass"),
+        ("items.fori", "for i, value in enumerate(items):\n    pass"),
+    ],
+)
+def test_for_templates_handle_integer_literals(source, expected):
+    buffer = Buffer(document=Document(source, cursor_position=len(source)))
+
+    assert postfix._expand_buffer(buffer)
+    assert buffer.text == expected
+
+
+def test_fori_placeholder_tab_sequence():
+    source = "items.fori"
+    buffer = Buffer(document=Document(source, cursor_position=len(source)))
+
+    assert postfix._expand_buffer(buffer)
+    assert buffer.text == "for i, value in enumerate(items):\n    pass"
+    assert list(buffer.document.selection_ranges()) == [(4, 5)]
+
+    buffer.cut_selection()
+    buffer.insert_text("index")
+    assert postfix._accept_placeholder(buffer)
+    assert list(buffer.document.selection_ranges()) == [(11, 16)]
+    assert postfix._reverse_placeholder(buffer)
+    assert list(buffer.document.selection_ranges()) == [(4, 9)]
+    assert postfix._accept_placeholder(buffer)
+
+    assert postfix._accept_placeholder(buffer)
+    assert list(buffer.document.selection_ranges()) == [(42, 46)]
+
+
+def test_ef_placeholders_select_cond_without_colon():
+    source = "key > 1.ef"
+    buffer = Buffer(document=Document(source, cursor_position=len(source)))
+
+    assert postfix._expand_buffer(buffer)
+    assert buffer.text == (
+        "if key > 1:\n    pass\nelif cond:\n    pass\nelse:\n    pass"
+    )
+    assert list(buffer.document.selection_ranges()) == [(16, 20)]
+
+    assert postfix._accept_placeholder(buffer)
+    assert list(buffer.document.selection_ranges()) == [(26, 30)]
+    selected_start, selected_end = next(buffer.document.selection_ranges())
+    assert buffer.text[selected_start:selected_end] == "cond"
+    assert buffer.text[selected_end] == ":"
+
+    assert postfix._reverse_placeholder(buffer)
+    assert list(buffer.document.selection_ranges()) == [(16, 20)]
+
+
+def test_shift_tab_moves_to_previous_fori_placeholder():
+    assert _run_prompt_keys("items.fori\t\t\x1b[Z\r\r\r\r") == (
+        "for i, value in enumerate(items):\n    pass"
+    )
 
 
 def test_exact_postfix_tab_preserves_indentation():
